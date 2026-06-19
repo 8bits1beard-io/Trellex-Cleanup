@@ -252,6 +252,15 @@ In the Intune portal, create a Remediation and upload the pair:
 - **Run in 64-bit PowerShell:** Yes
 - **Schedule:** frequent (e.g. hourly) to catch machines before their next reboot.
 
+To **pilot** the remediation on a sample machine before deploying, run it manually with
+`-WhatIf` — it reports what it would remove and exits, making no changes, no backup, and no
+reboot:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\Remediate-TrellixOrphanedFilters.ps1" -WhatIf
+# review %WINDIR%\Temp\TrellixFilterRemediate-<timestamp>.log
+```
+
 ## Backup & rollback
 
 Before changing anything, the modifying scripts (`Fix-` and `Remediate-`) export every

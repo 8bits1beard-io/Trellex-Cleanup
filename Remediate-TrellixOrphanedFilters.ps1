@@ -14,14 +14,24 @@
     owning product IS installed, the entry is left to the product owner. Only the orphaned
     string is removed; other filters in the value are kept; affected keys are backed up first.
 
+.PARAMETER WhatIf
+    Pilot mode: report what WOULD be removed and exit. Makes NO registry changes,
+    no backup, no user warning, and no reboot. Use this to validate the decision on
+    a sample machine before deploying through Intune.
+
 .NOTES
     Runs in SYSTEM context (no interactive prompt). Backup + log under %WINDIR%\Temp.
-    Exit 0 = success. Exit 1 = error.
+    Exit 0 = success (or dry run). Exit 1 = error.
 
     Author:       Joshua Walderbach
     Contributors: Brandon Villines, Corey Heflin, TJ Walton
     Thanks:       Sanket Rana, Christopher Lamphere (testing & log research)
 #>
+
+[CmdletBinding()]
+param(
+    [switch]$WhatIf
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -126,6 +136,7 @@ function Test-FilterOrphaned {
 # ---------------------------------------------------------------------------
 
 Write-Log "Remediation start. Log: $LogPath"
+if ($WhatIf) { Write-Log "MODE: DRY RUN (-WhatIf) - no changes, no backup, no reboot." 'WARN' }
 Get-OwnerContext
 
 # Discover every device key that has a filter value: all CLASS keys + all device
@@ -163,6 +174,8 @@ foreach ($key in $keysWithFilters) {
             if ($r.Orphaned) {
                 $toRemove += $entry
                 Write-Log "ORPHAN: '$entry' in $valName of $($key.Name)  [$($r.Reason)]" 'WARN'
+            } else {
+                Write-Log "keep:   '$entry' in $valName of $($key.Name)  [$($r.Reason)]"
             }
         }
 
@@ -178,6 +191,17 @@ foreach ($key in $keysWithFilters) {
 
 if ($plannedChanges.Count -eq 0) {
     Write-Log "Nothing to remediate (no orphaned Trellix filters)." 'OK'
+    exit 0
+}
+
+Write-Log "Found $($plannedChanges.Count) filter value(s) needing repair." 'WARN'
+
+# Dry run: report only, then stop before any backup/change/reboot.
+if ($WhatIf) {
+    foreach ($chg in $plannedChanges) {
+        Write-Log "WOULD remove [$($chg.Removing -join ', ')] from $($chg.Value) on $($chg.RegName)" 'WARN'
+    }
+    Write-Log "Dry run complete. Re-run without -WhatIf to apply." 'OK'
     exit 0
 }
 
