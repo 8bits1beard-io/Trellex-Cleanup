@@ -5,12 +5,14 @@
     affected keys to a .reg file, logs everything, warns the user, and reboots in 5 min.
 
 .DESCRIPTION
-    Removes a filter entry only when it is BOTH:
-        1. Unresolvable - service key missing OR driver .sys file missing, AND
-        2. Name-matched - matches a Trellix/McAfee pattern (mfe*, hdlp*, mcafee*, trellix*)
-    Only the dead string is removed; other filters in the multi-string value are kept.
-    Healthy Trellix installs and shared drivers owned by other products (e.g. ENS mfehidk)
-    resolve fine and are left untouched.
+    Removes a filter entry only when BOTH:
+        1. Name-matched - it is a Trellix/McAfee driver (hdlp*, mfe*, mcafee, trellix), AND
+        2. Owner absent - the PRODUCT that owns that driver is NOT installed
+    Driver files left on disk no longer fool the check - the decision is product presence
+    (Uninstall entry / running service), not file-on-disk. hdlpdbk/hdlpflt are owned by DLP;
+    mfehidk is shared, so it is removed only when neither DLP nor ENS is installed. If the
+    owning product IS installed, the entry is left to the product owner. Only the orphaned
+    string is removed; other filters in the value are kept; affected keys are backed up first.
 
 .NOTES
     Runs in SYSTEM context (no interactive prompt). Backup + log under %WINDIR%\Temp.
@@ -21,30 +23,49 @@
     Thanks:       Sanket Rana, Christopher Lamphere (testing & log research)
 #>
 
-# Known Trellix/McAfee DLP class-filter drivers. hdlpdbk = DLP Device Blocking
-# Filter Driver (the one that blocks NIC/USB). An entry is removed only if it is
-# in this list AND its driver is actually gone (Test-FilterOrphaned), so a
-# healthy install is never touched. Add names as needed.
-$TrellixPatterns   = @('hdlpdbk', 'hdlpflt', 'mfehidk')
-$FilterValueNames  = @('UpperFilters', 'LowerFilters')
-$RebootDelaySeconds = 300   # 5 minutes
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
+# Which PRODUCT owns each driver. A filter is removed only when its owning product
+# is NOT installed - so stray driver files on disk no longer fool the check.
+$DriverOwnerPatterns = @{
+    'hdlpdbk' = 'Data Loss Prevention|DLP'
+    'hdlpflt' = 'Data Loss Prevention|DLP'
+    'mfehidk' = 'Data Loss Prevention|DLP|Endpoint Security|Threat Prevention|VirusScan|Host Intrusion|Firewall'
+}
+# Fallback owner for any other hdlp*/mfe*/mcafee/trellix driver: any McAfee/Trellix product.
+$DefaultOwnerPattern = 'McAfee|Trellix'
+
+# Filter values to inspect on each device key.
+$FilterValueNames  = @('UpperFilters', 'LowerFilters')
+
+# Seconds before the controlled reboot (5 minutes - user is warned, runs unattended).
+$RebootDelaySeconds = 300
+
+# Timestamped log + registry backup paths under %WINDIR%\Temp.
 $Stamp   = (Get-Date).ToString('yyyyMMdd-HHmmss')
 $LogPath = Join-Path $env:WINDIR "Temp\TrellixFilterRemediate-$Stamp.log"
 $BakPath = Join-Path $env:WINDIR "Temp\TrellixFilterRemediate-$Stamp.backup.reg"
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Append a timestamped line to the log file.
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
     $line = "{0} [{1}] {2}" -f (Get-Date).ToString('HH:mm:ss'), $Level, $Message
     Add-Content -Path $LogPath -Value $line -ErrorAction SilentlyContinue
 }
 
+# Is this filter name a Trellix/McAfee driver? (broad, to catch every variant)
 function Test-IsTrellixName {
     param([string]$Name)
-    foreach ($p in $TrellixPatterns) { if ($Name -match ("^" + [regex]::Escape($p))) { return $true } }
-    return $false
+    return ($Name -match '^(hdlp|mfe)' -or $Name -match '(?i)mcafee|trellix')
 }
 
+# Resolve a service driver file path from its ImagePath (or the kernel default).
 function Resolve-DriverPath {
     param([string]$ImagePath)
     if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $null }
@@ -57,20 +78,58 @@ function Resolve-DriverPath {
     return $p
 }
 
-function Test-FilterOrphaned {
-    param([string]$FilterName)
-    $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$FilterName"
-    if (-not (Test-Path $svcPath)) { return @{ Orphaned = $true; Reason = "service key missing" } }
-    $svc = Get-ItemProperty -Path $svcPath -ErrorAction SilentlyContinue
-    $img = $svc.ImagePath
-    if ([string]::IsNullOrWhiteSpace($img)) { $img = "System32\drivers\$FilterName.sys" }
-    $file = Resolve-DriverPath -ImagePath $img
-    if ($file -and (Test-Path -LiteralPath $file)) { return @{ Orphaned = $false; Reason = "resolves to $file" } }
-    return @{ Orphaned = $true; Reason = "driver file missing ($file)" }
+# Snapshot installed products + running services once (used to judge "owner present").
+function Get-OwnerContext {
+    $roots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $script:InstalledProducts = @(Get-ItemProperty $roots -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName } | Select-Object DisplayName, InstallLocation)
+    $script:RunningServices = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.State -eq 'Running' } | Select-Object Name, PathName)
 }
 
-Write-Log "Remediation start. Log: $LogPath"
+# Is the product that OWNS this driver currently installed or running?
+function Test-OwningProductPresent {
+    param([string]$DriverName)
+    $pattern = $DriverOwnerPatterns[$DriverName.ToLower()]
+    if (-not $pattern) { $pattern = $DefaultOwnerPattern }
+    if ($script:InstalledProducts | Where-Object { $_.DisplayName -match $pattern }) { return @{ Present = $true;  Reason = "installed/owned (/$pattern/)" } }
+    if ($script:RunningServices  | Where-Object { $_.PathName    -match $pattern }) { return @{ Present = $true;  Reason = "owner service running (/$pattern/)" } }
+    return @{ Present = $false; Reason = "no owning product installed (/$pattern/)" }
+}
 
+# Forensic detail only (logged, not decisive).
+function Get-DriverDetail {
+    param([string]$Name)
+    $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+    $keyExists = Test-Path $svcPath
+    $img = if ($keyExists) { (Get-ItemProperty $svcPath -ErrorAction SilentlyContinue).ImagePath } else { $null }
+    if ([string]::IsNullOrWhiteSpace($img)) { $img = "System32\drivers\$Name.sys" }
+    $file = Resolve-DriverPath -ImagePath $img
+    $fileExists = [bool]($file -and (Test-Path -LiteralPath $file -ErrorAction SilentlyContinue))
+    return "svcKey=$keyExists; imagePathFile=$fileExists"
+}
+
+# THE decision: clear a name-matched filter only when its owning product is absent.
+function Test-FilterOrphaned {
+    param([string]$FilterName)
+    $own = Test-OwningProductPresent -DriverName $FilterName
+    $detail = Get-DriverDetail -Name $FilterName
+    if ($own.Present) { return @{ Orphaned = $false; Reason = "$($own.Reason) [$detail]" } }
+    return @{ Orphaned = $true; Reason = "$($own.Reason) [$detail]" }
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+Write-Log "Remediation start. Log: $LogPath"
+Get-OwnerContext
+
+# Discover every device key that has a filter value: all CLASS keys + all device
+# INSTANCE (Enum) keys. The name-match + owner-absent guard makes a broad scan safe.
 $scanRoots = @(
     'HKLM:\SYSTEM\CurrentControlSet\Control\Class',
     'HKLM:\SYSTEM\CurrentControlSet\Enum'

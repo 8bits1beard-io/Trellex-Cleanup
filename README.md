@@ -53,14 +53,23 @@ Relevant class GUIDs:
 
 These filter values are `REG_MULTI_SZ` (a list of **service names**, not file paths). At
 boot, Windows builds each device's driver stack and loads every filter service listed. If
-the DLP uninstall removed the `hdlpdbk` service/driver file but left its **name** in the
-filter list, the load fails and Windows fails the **entire device** — typically **Code 39**
-(and the related **Code 38** documented in Trellix KB93017). Because DLP filters each
-device *class* separately, NIC and USB all go down together.
+the DLP uninstall left the `hdlpdbk` **name** in the filter list but the driver can no
+longer load (service de-registered, or its real `ImagePath` file gone), the load fails and
+Windows fails the **entire device** — typically **Code 39** (and the related **Code 38**
+documented in Trellix KB93017). Because DLP filters each device *class* separately, NIC and
+USB all go down together.
+
+> **Important nuance (why detection is product-based):** the driver file is **not** a
+> reliable signal. Uninstallers routinely leave `hdlpdbk.sys` behind (often a stray copy in
+> `System32\drivers`) even though the DLP product is gone and the device is blocked. So
+> "the `.sys` exists" does **not** mean Trellix is healthy. These tools therefore decide on
+> the one unambiguous signal: **is the product that owns the driver actually installed?**
 
 ```mermaid
 flowchart TD
-    A[Trellix DLP uninstalled badly] --> B[hdlpdbk driver file/service removed]
+    A[Trellix DLP uninstalled badly] --> B[DLP product gone; hdlpdbk
+    can no longer load
+    file/service may still linger]
     B --> C["But hdlpdbk name LEFT in
     UpperFilters / LowerFilters"]
     C --> D[Machine reboots]
@@ -68,8 +77,7 @@ flowchart TD
     for NIC and USB classes]
     E --> F{Load every filter
     service in the list}
-    F --> G["hdlpdbk service is gone -
-    load FAILS"]
+    F --> G["hdlpdbk fails to load"]
     G --> H["Windows fails the whole device
     Code 39 / 38"]
     H --> I[WiFi + Ethernet + USB dead]
@@ -77,9 +85,9 @@ flowchart TD
 
 ## What these tools do
 
-The core action in every script is identical: **find a leftover `hdlpdbk` filter entry,
-confirm the driver is actually gone, and remove only that dead entry** — then reboot so
-Windows rebuilds a clean device stack.
+The core action in every script is identical: **find a Trellix/McAfee filter entry, confirm
+the product that owns it is no longer installed, and remove only that orphaned entry** —
+then reboot so Windows rebuilds a clean device stack.
 
 There are two delivery paths:
 
@@ -109,6 +117,7 @@ flowchart LR
 | `Detect-TrellixOrphanedFilters.ps1` | Intune **detection** (read-only check) | SYSTEM | No | No |
 | `Remediate-TrellixOrphanedFilters.ps1` | Intune **remediation** (the fixer) | SYSTEM | **Yes** (5-min warning) | Yes, 5 min |
 | `Fix-TrellixOrphanedFilters.ps1` | **Tech** on-device rescue | Admin | No (tech is present) | Yes, 30 s |
+| `Get-TrellixFilterDiagnostic.ps1` | **Read-only** diagnostic (collects state) | Any (elevated best) | No | No |
 
 ## How the PR (Intune) pair works
 
@@ -119,10 +128,10 @@ The PR is two scripts working as a **checker** and a **fixer**.
 Intune runs this on a schedule on every machine. It asks one question and **changes
 nothing**:
 
-> *Is there a leftover `hdlpdbk` filter entry pointing to a driver that's already gone?*
+> *Is there a Trellix/McAfee filter entry whose owning product is no longer installed?*
 
-- **No** → reports compliant (exit `0`) → nothing happens. (Healthy Trellix installs land
-  here — the entry resolves to a real driver, so it's not flagged.)
+- **No** → reports compliant (exit `0`) → nothing happens. (Healthy installs land here — the
+  owning product is present, so the entry is not flagged.)
 - **Yes** → reports non-compliant (exit `1`) → Intune triggers the fixer.
 
 ### 2. The fixer — `Remediate-TrellixOrphanedFilters.ps1`
@@ -139,55 +148,67 @@ sequenceDiagram
 
     loop On schedule (e.g. hourly)
         I->>D: Run detection
-        alt Orphaned hdlpdbk found
+        alt Orphaned filter found (owner absent)
             D-->>I: Exit 1 (non-compliant)
             I->>R: Run remediation
             R->>R: Backup registry (.reg)
-            R->>R: Remove only the dead entry
+            R->>R: Remove only the orphaned entry
             R->>R: Write log file
             R->>U: Warn: reboot in 5 minutes
             R->>R: shutdown /r /t 300
-        else Healthy / no orphan
+        else Healthy / owner present
             D-->>I: Exit 0 (compliant)
             Note over I: No action taken
         end
     end
 ```
 
-**Why it won't loop or false-fire in Intune:** if Trellix is still installed, the entry
-resolves to a real driver, detection returns compliant, and the remediation never runs —
-so it can't show as *recurring* or *failed*. It only acts on genuinely broken machines,
-and once fixed they report compliant on the next check.
+**Why it won't loop or false-fire in Intune:** if the owning product is still installed,
+detection returns compliant and the remediation never runs — so it can't show as
+*recurring* or *failed*. It only acts when the product is gone, and once the orphaned entry
+is removed there's nothing left to flag on the next check.
 
 ## The safety logic (why this is safe to run everywhere)
 
 Every script removes a filter entry **only if both conditions are true**:
 
-1. **Name match** — the entry is a known DLP driver (`hdlpdbk`, `hdlpflt`, `mfehidk`).
-2. **Orphaned** — the named service is missing, **or** its driver `.sys` file is missing.
+1. **Name match** — the entry is a Trellix/McAfee driver (`hdlp*`, `mfe*`, `mcafee`, `trellix`).
+2. **Owner absent** — the **product that owns that driver is not installed** (no Uninstall
+   entry and no matching service running).
 
-Both guards are required. Only the dead string is pruned; any other legitimate filter in
-the same `REG_MULTI_SZ` value is preserved.
+Driver files on disk are deliberately **not** part of the decision (they linger after
+uninstall). Both guards are required. Only the orphaned string is pruned; any other
+legitimate filter in the same `REG_MULTI_SZ` value is preserved.
 
 ```mermaid
 flowchart TD
     A[Filter entry found in
     UpperFilters / LowerFilters] --> B{Name matches
-    hdlpdbk / hdlpflt / mfehidk?}
+    hdlp* / mfe* / mcafee / trellix?}
     B -->|No| K[Leave it alone]
-    B -->|Yes| C{Service key exists
-    AND .sys file present?}
-    C -->|Yes - resolves| K
-    C -->|No - orphaned| R[Remove ONLY this entry
+    B -->|Yes| C{Owning product installed?
+    Uninstall entry or service running}
+    C -->|Yes - present| K
+    C -->|No - absent| R[Remove ONLY this entry
     keep all other filters]
 ```
 
+Driver ownership map:
+
+| Driver | Owned by | Cleared when |
+|---|---|---|
+| `hdlpdbk`, `hdlpflt` | DLP | DLP not installed |
+| `mfehidk` (shared) | DLP **or** ENS | **neither** DLP nor ENS installed |
+| other `hdlp*`/`mfe*` | any McAfee/Trellix product | no McAfee/Trellix product installed |
+
 This is what protects:
 
-- **Healthy Trellix machines** — `hdlpdbk` resolves to a real driver → left alone.
-- **Shared drivers** — e.g. `mfehidk`, often owned by Trellix ENS rather than DLP; if ENS
-  still owns it the driver resolves → left alone.
-- **Non-Trellix filters** — never match the name list → never touched.
+- **Healthy machines** — the owning product is installed → left alone (even if a device
+  looks odd, repair is the product owner's job, not ours).
+- **Shared drivers** — `mfehidk` stays put as long as ENS (or DLP) is installed.
+- **Stray driver files** — a leftover `hdlpdbk.sys` no longer fools the check, because the
+  decision is product presence, not file-on-disk.
+- **Non-Trellix filters** — never match the name pattern → never touched.
 
 ## Usage
 
@@ -208,6 +229,18 @@ powershell -ExecutionPolicy Bypass -File ".\Fix-TrellixOrphanedFilters.ps1" -NoR
 
 > Note: if the **USB controller class** is among the bricked devices, USB storage may not
 > mount — keep a local copy of the script on the machine or use another transfer path.
+
+### Diagnostic (collect machine state, read-only)
+
+Use on an affected (or healthy) machine to capture the full picture for analysis:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\Get-TrellixFilterDiagnostic.ps1"
+
+# Or tee a copy to a file for sharing
+powershell -ExecutionPolicy Bypass -File ".\Get-TrellixFilterDiagnostic.ps1" |
+    Tee-Object "$env:WINDIR\Temp\TrellixDiag-$env:COMPUTERNAME.txt"
+```
 
 ### Intune Remediations (prevention)
 
@@ -239,8 +272,10 @@ reg import "C:\Windows\Temp\TrellixFilterRemediate-<timestamp>.backup.reg"
 
 ## Logging
 
-Every script writes a timestamped log for each entry it inspects, keeps (with the reason it
-resolved), or removes (with the reason it was judged orphaned):
+Every script writes a timestamped log for each entry it inspects, keeps (with the reason the
+owner was found present), or removes (with the reason it was judged orphaned). Each line also
+records the forensic driver detail (`svcKey=…; imagePathFile=…`) even though it isn't the
+deciding factor:
 
 ```
 %WINDIR%\Temp\TrellixFilterDetect-<timestamp>.log
@@ -254,8 +289,12 @@ resolved), or removes (with the reason it was judged orphaned):
   bricked, Intune cannot reach it — use the `Fix-` script by hand on those.
 - This is therefore a **race**: run the detection frequently so orphaned entries are
   defused before the user's next reboot.
-- Confirm the target driver names match your environment. Run `Fix- -WhatIf` on one real
-  affected machine and review the log to verify `hdlpdbk` is the entry being found.
+- Confirm the owner patterns match your environment's installed-program names. Run
+  `Get-TrellixFilterDiagnostic.ps1` (or `Fix- -WhatIf`) on one real affected machine and one
+  healthy machine, and review the logs to confirm the decision is correct before going wide.
+- If a machine's **owning product is still installed but the device is broken**, these tools
+  intentionally leave it alone (that's the product owner's repair, and it avoids Intune
+  loops). Flag those to the DLP team rather than force-clearing.
 
 ## References
 
