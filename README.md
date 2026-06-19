@@ -31,6 +31,38 @@ healthy installs untouched.
 
 ## How it decides what to remove
 
+### In plain terms
+
+**It deletes the key only when it's certain Trellix is actually gone — it doesn't guess.**
+
+To be certain, it checks the two places that can't lie:
+
+1. **The Installed Programs list** (the same one in Add/Remove Programs) — is Trellix DLP listed?
+2. **The running services** — is any Trellix service actually running?
+
+- If **neither** shows Trellix → the product is truly gone → the leftover key is safe to delete.
+- If **either** shows Trellix → it's still here → leave the key alone.
+
+A few things that make this safe and reliable:
+
+- **It knows which Trellix piece owns which key.** Some drivers are shared with another Trellix
+  product (ENS), so it won't pull a shared one unless *both* products are gone — it won't break
+  something else that's still in use.
+- **It removes only the one bad entry.** If a device's filter list has several drivers, it pulls
+  out just the orphaned Trellix one and leaves everything else exactly as it was.
+- **It can't go wrong on a healthy machine.** Because it only acts when the product is gone, a
+  working Trellix machine is never touched — so it never gets stuck retrying or showing as failed
+  in Intune.
+- **Everything is safe and reviewable.** It backs up the keys before changing anything (and
+  refuses to proceed if the backup fails), writes a log of exactly what it inspected/kept/removed
+  and why, and has a preview mode (`-WhatIf`) that shows what it *would* do without changing
+  anything.
+
+In one sentence: **it reliably fixes the broken machines, provably leaves the healthy ones alone,
+and records and can undo everything it does.**
+
+### The precise rule
+
 It removes a filter entry **only when both** are true:
 
 1. **Name match** — the entry is a Trellix/McAfee driver (`hdlp*`, `mfe*`, `mcafee`, `trellix`).
