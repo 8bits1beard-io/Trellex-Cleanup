@@ -257,6 +257,16 @@ resolved), or removes (with the reason it was judged orphaned):
 - Confirm the target driver names match your environment. Run `Fix- -WhatIf` on one real
   affected machine and review the log to verify `hdlpdbk` is the entry being found.
 
+## References
+
+- [hdlpdbk.sys — McAfee/Trellix DLP Device Blocking Filter Driver](http://windowfdb.com/q.php?q=hdlpdbk-sys-c-windows-system32-drivers)
+- [Trellix KB93017 — Some hardware devices stop functioning after DLP is installed and rebooted (Code 38)](https://kcm.trellix.com/corporate/index?page=content&id=KB93017&locale=en_US)
+- [How McAfee DLP Endpoint and Device Control work (Trellix docs)](https://docs.trellix.com/bundle/data-loss-prevention-11.1.x-product-guide/page/GUID-916E5282-2B84-4150-A8CD-5F6F82238F81.html)
+- [McAfee Community — "DLP issue driver not installed Hdlpdbk removable storage"](https://community.mcafee.com/t5/Data-Loss-Prevention-DLP/DLP-issue-driver-not-installed-Hdlpdbk-removable-storage/td-p/649284)
+- [Implementing McAfee Device Control Security (PDF)](https://www.e-spincorp.com/pdf/product/Mcafee/Implementing_McAfee_DLPe_Device_Control.pdf)
+- [DEVPKEY_Device_UpperFilters (Microsoft Learn)](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/devpkey-device-upperfilters)
+- [Trellix Data Loss Prevention product page](https://www.trellix.com/products/dlp/)
+
 ## Credits
 
 - **Author:** Joshua Walderbach
