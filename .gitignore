@@ -1,0 +1,9 @@
+# Logs and registry backups produced by the cleanup scripts (if copied locally)
+*.log
+*.backup.reg
+
+# Windows / editor cruft
+Thumbs.db
+Desktop.ini
+.vs/
+*.swp
