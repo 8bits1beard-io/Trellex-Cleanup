@@ -53,10 +53,10 @@ A few things that make this safe and reliable:
 - **It can't go wrong on a healthy machine.** Because it only acts when the product is gone, a
   working Trellix machine is never touched — so it never gets stuck retrying or showing as failed
   in Intune.
-- **Everything is safe and reviewable.** It backs up the keys before changing anything (and
-  refuses to proceed if the backup fails), writes a log of exactly what it inspected/kept/removed
-  and why, and has a preview mode (`-WhatIf`) that shows what it *would* do without changing
-  anything.
+- **Everything is safe and reviewable.** It backs up the keys before changing anything (the
+  automated remediation refuses to proceed if that backup fails), writes a log of exactly what
+  it inspected/kept/removed and why, and has a preview mode (`-WhatIf`) that shows what it
+  *would* do without changing anything.
 
 In one sentence: **it reliably fixes the broken machines, provably leaves the healthy ones alone,
 and records and can undo everything it does.**

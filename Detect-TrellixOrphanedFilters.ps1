@@ -1,14 +1,27 @@
 <#
 .SYNOPSIS
-    Intune Remediations DETECTION script.
-    Reports NON-COMPLIANT (exit 1) only when an orphaned Trellix/McAfee filter
-    entry is present - i.e. a Trellix/McAfee driver name still listed in a device
-    UpperFilters/LowerFilters value while the PRODUCT that owns that driver is NOT
-    installed. Driver files left on disk no longer fool the check.
+    Intune Remediations DETECTION script (pairs with Remediate-TrellixOrphanedFilters.ps1).
+    Reports NON-COMPLIANT (exit 1) only when an orphaned Trellix/McAfee filter entry is present.
 
-    A healthy install (owning product present) -> COMPLIANT (exit 0) -> remediation
-    never runs -> never shows as recurring/failed in Intune. Shared drivers like
-    mfehidk only flag when neither DLP nor ENS is installed.
+.DESCRIPTION
+    Read-only check. Scans every device CLASS and INSTANCE (Enum) key for UpperFilters/
+    LowerFilters entries naming a Trellix/McAfee driver, then reports NON-COMPLIANT (exit 1)
+    only when such an entry is orphaned - i.e. the PRODUCT that owns that driver is NOT
+    installed (judged by the Installed Programs list and running services, not by whether the
+    driver file is still on disk).
+
+    A healthy install (owning product present) -> COMPLIANT (exit 0) -> remediation never
+    runs -> never shows as recurring/failed in Intune. Shared drivers like mfehidk only flag
+    when neither DLP nor ENS is installed. Makes no changes; logs every entry it keeps/flags.
+
+.EXAMPLE
+    # Deployed as the Intune Remediations detection script (run as SYSTEM, 64-bit PowerShell).
+    # Takes no parameters; Intune reads the exit code to decide whether to remediate.
+
+.EXAMPLE
+    # Pilot manually on one machine and inspect the exit code (0 = compliant, 1 = non-compliant).
+    powershell -ExecutionPolicy Bypass -File .\Detect-TrellixOrphanedFilters.ps1
+    $LASTEXITCODE
 
 .NOTES
     Runs in SYSTEM context. Read-only. Logs to %WINDIR%\Temp.

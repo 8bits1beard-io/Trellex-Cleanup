@@ -19,6 +19,14 @@
     no backup, no user warning, and no reboot. Use this to validate the decision on
     a sample machine before deploying through Intune.
 
+.EXAMPLE
+    # Deployed as the Intune Remediations remediation script (run as SYSTEM, 64-bit PowerShell).
+    # Runs only on devices the detection script flagged; applies the fix and reboots in 5 min.
+
+.EXAMPLE
+    # Pilot the decision on one machine first - reports only, makes no changes and no reboot.
+    powershell -ExecutionPolicy Bypass -File .\Remediate-TrellixOrphanedFilters.ps1 -WhatIf
+
 .NOTES
     Runs in SYSTEM context (no interactive prompt). Backup + log under %WINDIR%\Temp.
     Exit 0 = success (or dry run). Exit 1 = error.
